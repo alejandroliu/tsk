@@ -401,6 +401,107 @@ test('require crypto throws', () => throws(() => require('crypto')));
 test('require unknown throws', () => throws(() => require('no_such_module_xyz')));
 
 // ============================================================
+// require — file-based module loader
+// ============================================================
+
+section('require — file-based module loader');
+
+const MODS = TMP + '/mods';
+os.mkdir(MODS, 0o755);
+
+test('loads module by absolute path', () => {
+  fs.writeFileSync(MODS + '/abs.js', 'module.exports = { value: 99 };');
+  const m = require(MODS + '/abs.js');
+  eq(m.value, 99);
+});
+
+test('.js extension inferred', () => {
+  fs.writeFileSync(MODS + '/noext.js', 'module.exports = { ok: true };');
+  const m = require(MODS + '/noext');
+  assert(m.ok);
+});
+
+test('exports.x pattern', () => {
+  fs.writeFileSync(MODS + '/named.js', 'exports.greet = function(n) { return "hi " + n; };');
+  eq(require(MODS + '/named.js').greet('world'), 'hi world');
+});
+
+test('module.exports = function', () => {
+  fs.writeFileSync(MODS + '/fn.js', 'module.exports = function add(a, b) { return a + b; };');
+  const fn = require(MODS + '/fn.js');
+  eq(typeof fn, 'function');
+  eq(fn(2, 3), 5);
+});
+
+test('loaded module receives correct __filename and __dirname', () => {
+  fs.writeFileSync(MODS + '/meta.js', 'module.exports = { f: __filename, d: __dirname };');
+  const m = require(MODS + '/meta.js');
+  eq(m.f, MODS + '/meta.js');
+  eq(m.d, MODS);
+});
+
+test('module is cached after first load', () => {
+  fs.writeFileSync(MODS + '/cached.js', 'module.exports = { count: 0 };');
+  const a = require(MODS + '/cached.js');
+  a.count = 1;
+  const b = require(MODS + '/cached.js');
+  eq(b.count, 1);
+});
+
+test('scoped require: module loads sibling by relative path', () => {
+  fs.writeFileSync(MODS + '/sib_a.js', 'module.exports = { from: "a" };');
+  fs.writeFileSync(MODS + '/sib_b.js', 'const a = require("./sib_a"); module.exports = { msg: "b got " + a.from };');
+  eq(require(MODS + '/sib_b.js').msg, 'b got a');
+});
+
+test('circular require returns partial exports without infinite loop', () => {
+  fs.writeFileSync(MODS + '/circ_a.js', [
+    'const b = require("./circ_b");',
+    'module.exports = { name: "a", bName: b.name };',
+  ].join('\n'));
+  fs.writeFileSync(MODS + '/circ_b.js', [
+    'const a = require("./circ_a");',
+    'module.exports = { name: "b", aName: a.name };',
+  ].join('\n'));
+  const a = require(MODS + '/circ_a.js');
+  eq(a.name, 'a');
+  eq(a.bName, 'b');
+  // circ_b captured circ_a's partial (empty) exports before circ_a finished
+  eq(require(MODS + '/circ_b.js').aName, undefined);
+});
+
+test('index.js fallback for directory require', () => {
+  fs.mkdirSync(MODS + '/pkg_index');
+  fs.writeFileSync(MODS + '/pkg_index/index.js', 'module.exports = { from: "index" };');
+  eq(require(MODS + '/pkg_index').from, 'index');
+});
+
+test('package.json "main" entry point', () => {
+  fs.mkdirSync(MODS + '/pkg_main');
+  fs.mkdirSync(MODS + '/pkg_main/lib');
+  fs.writeFileSync(MODS + '/pkg_main/package.json', '{"main":"lib/entry.js"}');
+  fs.writeFileSync(MODS + '/pkg_main/lib/entry.js', 'module.exports = { version: 2 };');
+  eq(require(MODS + '/pkg_main').version, 2);
+});
+
+test('node_modules lookup from within a loaded module', () => {
+  fs.mkdirSync(MODS + '/app');
+  fs.mkdirSync(MODS + '/app/node_modules');
+  fs.mkdirSync(MODS + '/app/node_modules/mypkg');
+  fs.writeFileSync(MODS + '/app/node_modules/mypkg/index.js', 'module.exports = { name: "mypkg" };');
+  fs.writeFileSync(MODS + '/app/main.js', 'module.exports = require("mypkg");');
+  eq(require(MODS + '/app/main.js').name, 'mypkg');
+});
+
+test('missing relative module throws', () => {
+  throws(() => require(MODS + '/no_such_file_xyz.js'));
+});
+
+test('missing bare module throws', () => {
+  throws(() => require('no_such_pkg_xyz_abc'));
+});
+
+// ============================================================
 // TextEncoder / TextDecoder
 // ============================================================
 

@@ -48,15 +48,18 @@ exec qjs --std -I /path/to/node_shim.js /path/to/typescript-5.4.5/tsc.js "$@"
 | `process` | `argv`, `env`, `cwd()`, `stdout`/`stderr`, `nextTick`, `hrtime` |
 | `__filename`, `__dirname` | Resolved from `scriptArgs[0]` |
 | `module`, `exports` | CommonJS stubs (needed for `isNodeLikeSystem()` check) |
+| `require('./rel')` / `require('pkg')` | CommonJS module loader — resolves files and `node_modules` |
+| TypeScript plugin host (`sys.require()`) | Plugin host calls `require()` with absolute paths; these resolve correctly via the module loader |
+
+`require()` supports relative paths (`./`, `../`), absolute paths, and bare package names. For bare names it walks `node_modules` directories up the filesystem tree (standard Node.js resolution). Entry points are resolved via `package.json` `"main"`, falling back to `index.js`. Modules are cached after first load; circular dependencies receive a partial `exports` object, matching Node.js behaviour.
 
 Because `require('crypto')` throws, TypeScript falls back to its built-in `generateDjb2Hash` for content hashing. Incremental build info (`.tsbuildinfo`) still works; it just uses a different hash algorithm than SHA-256.
 
 ## Limitations
 
-- **Watch mode (`--watch`) is a no-op.** `fs.watch`, `fs.watchFile`, and `fs.unwatchFile` are stubs that return immediately, and `setTimeout`/`setInterval` do not fire their callbacks. Use a shell loop or external file watcher instead.
+- **Watch mode (`--watch`) is not supported.** Passing `--watch` or `-w` exits immediately with an error. Use a shell loop or external file watcher instead.
 - **No `source-map-support`.** Stack traces in compiler errors won't be remapped. The compiler still reports TypeScript-level diagnostics correctly.
-- **No CPU profiling.** `--generateCpuProfile` requires the `inspector` module, which is stubbed out.
-- **`require()` only resolves built-in modules.** TypeScript plugins that call `sys.require()` to load external modules at runtime will fail.
+- **No CPU profiling.** `--generateCpuProfile` is not supported and exits immediately with an error.
 
 ## Tests
 
@@ -76,11 +79,8 @@ The suite covers `Buffer`, `path`, `fs`, `os`, `process`, `require`, `TextEncode
 ## Files
 
 ```
-node_shim.js          Node.js compatibility shim (~530 lines)
-test_runner.js        Shared test harness (~60 lines)
-shim_tests.js         Shim unit tests (~460 lines, 112 tests)
-tsc_tests.js          End-to-end compiler tests (~490 lines)
-typescript-5.4.5/
-  tsc.js              Bundled TypeScript compiler
-  lib.*.d.ts          Bundled library declaration files
+node_shim.js          Node.js compatibility shim
+test_runner.js        Shared test harness
+shim_tests.js         Shim unit tests
+tsc_tests.js          End-to-end compiler tests
 ```

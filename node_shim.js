@@ -443,30 +443,83 @@ const _osModule = {
 
 // ---- require ----
 
-function require(name) {
-  switch (name) {
-    case 'fs':     return _fsModule;
-    case 'path':   return _pathModule;
-    case 'os':     return _osModule;
-    case 'buffer': return { Buffer: _Buffer };
-    case 'crypto': throw new Error('crypto not available'); // triggers fallback to generateDjb2Hash
-    case 'util':   return {
-      format(fmt, ...a) { return a.reduce((s, v) => s.replace(/%[sdoj]/, String(v)), fmt); },
-      inspect(v) { try { return JSON.stringify(v); } catch { return String(v); } },
-      promisify(fn) { return (...a) => new Promise((res, rej) => fn(...a, (e, v) => e ? rej(e) : res(v))); },
-      inherits(C, P) { C.prototype = Object.create(P.prototype, { constructor: { value: C } }); },
-    };
-    case 'assert': return {
-      ok(v, m)           { if (!v) throw new Error(m || 'Assertion failed'); },
-      equal(a, b, m)     { if (a != b) throw new Error(m || `${a} != ${b}`); },
-      strictEqual(a,b,m) { if (a !== b) throw new Error(m || `${a} !== ${b}`); },
-    };
-    case 'v8':          return { writeHeapSnapshot() {}, getHeapStatistics() { return {}; } };
-    case 'perf_hooks':  return { performance: { now() { return Date.now(); }, mark() {}, measure() {} } };
-    case 'inspector':   return { Session: class { connect(){} post(m,p,cb){if(cb)cb(null,{});} disconnect(){} } };
-    case 'source-map-support': throw new Error('source-map-support not available');
-    default: throw new Error(`Cannot find module '${name}'`);
+const _moduleCache = {};
+
+function _resolveFile(base) {
+  const pkgPath = base + '/package.json';
+  if (_fsModule.existsSync(pkgPath)) {
+    try {
+      const pkg = JSON.parse(_fsModule.readFileSync(pkgPath, 'utf8'));
+      const main = _pathModule.join(base, pkg.main || 'index.js');
+      try { if (_fsModule.statSync(main).isFile()) return main; } catch {}
+    } catch {}
   }
+  for (const c of [base, base + '.js', base + '/index.js']) {
+    try { if (_fsModule.statSync(c).isFile()) return c; } catch {}
+  }
+  return null;
+}
+
+function _nodeModulesPaths(fromDir) {
+  const dirs = [];
+  let cur = fromDir;
+  while (true) {
+    dirs.push(_pathModule.join(cur, 'node_modules'));
+    const parent = _pathModule.dirname(cur);
+    if (parent === cur) break;
+    cur = parent;
+  }
+  return dirs;
+}
+
+function _makeRequire(fromDir) {
+  return function require(name) {
+    switch (name) {
+      case 'fs':     return _fsModule;
+      case 'path':   return _pathModule;
+      case 'os':     return _osModule;
+      case 'buffer': return { Buffer: _Buffer };
+      case 'crypto': throw new Error('crypto not available'); // triggers fallback to generateDjb2Hash
+      case 'util':   return {
+        format(fmt, ...a) { return a.reduce((s, v) => s.replace(/%[sdoj]/, String(v)), fmt); },
+        inspect(v) { try { return JSON.stringify(v); } catch { return String(v); } },
+        promisify(fn) { return (...a) => new Promise((res, rej) => fn(...a, (e, v) => e ? rej(e) : res(v))); },
+        inherits(C, P) { C.prototype = Object.create(P.prototype, { constructor: { value: C } }); },
+      };
+      case 'assert': return {
+        ok(v, m)           { if (!v) throw new Error(m || 'Assertion failed'); },
+        equal(a, b, m)     { if (a != b) throw new Error(m || `${a} != ${b}`); },
+        strictEqual(a,b,m) { if (a !== b) throw new Error(m || `${a} !== ${b}`); },
+      };
+      case 'v8':         return { writeHeapSnapshot() {}, getHeapStatistics() { return {}; } };
+      case 'perf_hooks': return { performance: { now() { return Date.now(); }, mark() {}, measure() {} } };
+      case 'inspector':  return { Session: class { connect(){} post(m,p,cb){if(cb)cb(null,{});} disconnect(){} } };
+      case 'source-map-support': throw new Error('source-map-support not available');
+    }
+
+    let filePath;
+    if (name.startsWith('./') || name.startsWith('../') || name.startsWith('/')) {
+      filePath = _resolveFile(_pathModule.resolve(fromDir, name));
+    } else {
+      for (const dir of _nodeModulesPaths(fromDir)) {
+        filePath = _resolveFile(_pathModule.join(dir, name));
+        if (filePath) break;
+      }
+    }
+    if (!filePath) throw new Error(`Cannot find module '${name}'`);
+
+    if (_moduleCache[filePath]) return _moduleCache[filePath].exports;
+
+    const code = std.loadFile(filePath);
+    if (code === null) throw new Error(`Cannot find module '${name}'`);
+    const mod = { exports: {}, id: filePath, filename: filePath, loaded: false };
+    _moduleCache[filePath] = mod;
+    const dirName = _pathModule.dirname(filePath);
+    const fn = eval(`(function(exports,require,module,__filename,__dirname){\n${code}\n})`);
+    fn(mod.exports, _makeRequire(dirName), mod, filePath, dirName);
+    mod.loaded = true;
+    return mod.exports;
+  };
 }
 
 // ---- process ----
@@ -474,6 +527,16 @@ function require(name) {
 const _envOverrides = {};
 const _scriptPath = _pathModule.resolve((typeof scriptArgs !== 'undefined' && scriptArgs[0]) || 'tsc.js');
 const _scriptArgs = (typeof scriptArgs !== 'undefined') ? scriptArgs.slice(1) : [];
+
+if (_scriptArgs.includes('--watch') || _scriptArgs.includes('-w')) {
+  std.err.puts('error: --watch is not supported under QuickJS (no event loop)\n');
+  std.exit(1);
+}
+
+if (_scriptArgs.some(a => a === '--generateCpuProfile' || a.startsWith('--generateCpuProfile='))) {
+  std.err.puts('error: --generateCpuProfile is not supported under QuickJS (no inspector module)\n');
+  std.exit(1);
+}
 
 const process = {
   argv: ['qjs', _scriptPath, ..._scriptArgs],
@@ -523,6 +586,7 @@ var module = { exports: {}, id: _scriptPath, filename: _scriptPath, loaded: fals
 var exports = module.exports;
 var __filename = _scriptPath;
 var __dirname = _pathModule.dirname(_scriptPath);
+var require = _makeRequire(__dirname);
 
 // ---- setTimeout fallback ----
 if (typeof setTimeout === 'undefined') {

@@ -20,6 +20,9 @@ Symlinks to directories report `isDirectory()=true` and `isSymbolicLink()=false`
 **`openSync`, `writeFileSync`, `appendFileSync` always report `ENOENT` on failure**
 Any failure (permission denied, path is a directory, disk full) is reported as `ENOENT` rather than the actual error.
 
+**`require()` does not support `NODE_PATH`** (`node_shim.js`)
+The module loader walks `node_modules` up the directory tree (standard Node.js resolution) but does not read the `NODE_PATH` environment variable. Node.js treats `NODE_PATH` as a colon-separated list of additional search directories, consulted after the `node_modules` walk. This could be useful for shared library trees that live outside any project. Implementation would be a few lines: split `process.env.NODE_PATH` on `:` and append the results to the search list in `_makeRequire`.
+
 ## Code quality
 
 **Base64 logic is duplicated three times**
