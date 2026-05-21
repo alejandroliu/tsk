@@ -92,6 +92,30 @@ test('subarray / slice', () => {
   eq(b.slice(0, 5).toString(), 'Hello');
 });
 
+test('Buffer.write utf8 (default)', () => {
+  const b = Buffer.alloc(5);
+  b.write('Hello');
+  eq(b.toString(), 'Hello');
+});
+
+test('Buffer.write latin1 encoding', () => {
+  const b = Buffer.alloc(3);
+  b.write('\xFF\xFE\x41', 0, 3, 'latin1');
+  eq(b[0], 0xFF); eq(b[1], 0xFE); eq(b[2], 0x41);
+});
+
+test('Buffer.write hex encoding', () => {
+  const b = Buffer.alloc(3);
+  b.write('deadbe', 0, 3, 'hex');
+  eq(b[0], 0xDE); eq(b[1], 0xAD); eq(b[2], 0xBE);
+});
+
+test('Buffer.write base64 encoding', () => {
+  const b = Buffer.alloc(3);
+  b.write('SGVs', 0, 3, 'base64'); // 'Hel'
+  eq(b[0], 72); eq(b[1], 101); eq(b[2], 108);
+});
+
 section('Buffer BOM detection (used by readFileWorker in tsc)');
 
 test('UTF-8 BOM detection', () => {
@@ -226,6 +250,23 @@ test('open-write-close creates readable file', () => {
   eq(fs.readFileSync(f, 'utf8'), 'line one\nline two\n');
 });
 
+test('openSync on missing file throws ENOENT', () => {
+  throws(() => fs.openSync(TMP + '/no_such_file_xyz.txt', 'r'), 'ENOENT');
+});
+
+test('openSync on directory throws EISDIR', () => {
+  throws(() => fs.openSync(TMP, 'w'), 'EISDIR');
+});
+
+test('writeSync with position seeks before writing', () => {
+  const f = TMP + '/seek_test.txt';
+  fs.writeFileSync(f, 'AAAAA');
+  const fd = fs.openSync(f, 'r+');
+  fs.writeSync(fd, 'XY', 2); // write 'XY' at file position 2
+  fs.closeSync(fd);
+  eq(fs.readFileSync(f, 'utf8'), 'AAXYA');
+});
+
 section('fs.existsSync / statSync');
 
 test('existsSync true for created file', () => assert(fs.existsSync(FILE1)));
@@ -268,6 +309,10 @@ test('mkdirSync creates directory', () => {
   assert(fs.statSync(SUBDIR).isDirectory());
 });
 
+test('mkdirSync on existing directory throws EEXIST', () => {
+  throws(() => fs.mkdirSync(SUBDIR), 'EEXIST');
+});
+
 test('mkdirSync recursive creates parents', () => {
   fs.mkdirSync(NESTED, { recursive: true });
   assert(fs.statSync(NESTED).isDirectory());
@@ -303,6 +348,17 @@ test('readdirSync throws for missing directory', () => {
   throws(() => fs.readdirSync(TMP + '/no_such_dir_xyz'), 'ENOENT');
 });
 
+test('readdirSync withFileTypes identifies symlinks via lstat', () => {
+  const target = SUBDIR + '/a.txt';
+  const link   = SUBDIR + '/link_to_a.txt';
+  os.symlink(target, link);
+  const entries = fs.readdirSync(SUBDIR, { withFileTypes: true });
+  const dirent = entries.find(e => e.name === 'link_to_a.txt');
+  assert(dirent && dirent.isSymbolicLink(), 'expected symlink dirent to report isSymbolicLink()');
+  assert(dirent && !dirent.isFile(),        'expected symlink dirent not to report isFile()');
+  os.remove(link);
+});
+
 section('fs.appendFileSync');
 
 test('appendFileSync adds to existing file', () => {
@@ -310,6 +366,14 @@ test('appendFileSync adds to existing file', () => {
   fs.writeFileSync(f, 'line1\n');
   fs.appendFileSync(f, 'line2\n');
   eq(fs.readFileSync(f, 'utf8'), 'line1\nline2\n');
+});
+
+test('writeFileSync on a directory throws EISDIR', () => {
+  throws(() => fs.writeFileSync(TMP, 'data'), 'EISDIR');
+});
+
+test('appendFileSync on a directory throws EISDIR', () => {
+  throws(() => fs.appendFileSync(TMP, 'data'), 'EISDIR');
 });
 
 section('fs.realpathSync');
@@ -388,6 +452,24 @@ test('memoryUsage returns object', () => {
 });
 
 // ============================================================
+// util.format
+// ============================================================
+
+section('util.format');
+
+const { format } = require('util');
+
+test('%s converts to string', () => eq(format('%s', 42), '42'));
+test('%d converts to number', () => eq(format('%d', '3.5'), '3.5'));
+test('%d on non-numeric', () => eq(format('%d', 'x'), 'NaN'));
+test('%j serialises to JSON', () => eq(format('%j', { a: 1 }), '{"a":1}'));
+test('%o pretty-prints object', () => { const r = format('%o', { x: 1 }); assert(r.includes('"x"') && r.includes('1')); });
+test('%% emits literal percent', () => eq(format('100%%'), '100%'));
+test('multiple specifiers', () => eq(format('%s=%d', 'x', 7), 'x=7'));
+test('extra args beyond specifiers are ignored', () => eq(format('%s', 'a', 'b'), 'a'));
+test('no specifiers returns fmt unchanged', () => eq(format('hello'), 'hello'));
+
+// ============================================================
 // require
 // ============================================================
 
@@ -397,7 +479,17 @@ test('require fs returns fs module', () => assert(typeof require('fs').readFileS
 test('require path returns path module', () => assert(typeof require('path').join === 'function'));
 test('require os returns os module', () => assert(typeof require('os').platform === 'function'));
 test('require buffer returns Buffer', () => assert(require('buffer').Buffer === Buffer));
-test('require crypto throws', () => throws(() => require('crypto')));
+test('require crypto returns createHash', () => assert(typeof require('crypto').createHash === 'function'));
+test('require crypto sha256 empty string', () => {
+  const hex = require('crypto').createHash('SHA256').update('').digest('hex');
+  assert(hex === 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855');
+});
+test('require crypto sha256 chained updates produce 64-char hex', () => {
+  const h = require('crypto').createHash('SHA256');
+  h.update('hello'); h.update(' '); h.update('world');
+  const hex = h.digest('hex');
+  assert(typeof hex === 'string' && hex.length === 64 && /^[0-9a-f]+$/.test(hex));
+});
 test('require unknown throws', () => throws(() => require('no_such_module_xyz')));
 
 // ============================================================
@@ -501,6 +593,35 @@ test('missing bare module throws', () => {
   throws(() => require('no_such_pkg_xyz_abc'));
 });
 
+test('NODE_PATH: bare require finds module in NODE_PATH directory', () => {
+  const dir = TMP + '/nodepath_lib';
+  fs.mkdirSync(dir);
+  fs.writeFileSync(dir + '/nodepath_mod.js', 'module.exports = { found: true };');
+  const prev = process.env.NODE_PATH || '';
+  process.env.NODE_PATH = dir;
+  try {
+    eq(require('nodepath_mod').found, true);
+  } finally {
+    process.env.NODE_PATH = prev;
+  }
+});
+
+test('NODE_PATH: colon-separated list is searched in order', () => {
+  const dir1 = TMP + '/nodepath_first';
+  const dir2 = TMP + '/nodepath_second';
+  fs.mkdirSync(dir1);
+  fs.mkdirSync(dir2);
+  fs.writeFileSync(dir1 + '/nodepath_order.js', 'module.exports = { src: "first" };');
+  fs.writeFileSync(dir2 + '/nodepath_order.js', 'module.exports = { src: "second" };');
+  const prev = process.env.NODE_PATH || '';
+  process.env.NODE_PATH = dir1 + ':' + dir2;
+  try {
+    eq(require('nodepath_order').src, 'first');
+  } finally {
+    process.env.NODE_PATH = prev;
+  }
+});
+
 // ============================================================
 // TextEncoder / TextDecoder
 // ============================================================
@@ -531,6 +652,21 @@ test('encode→decode round-trip', () => {
   eq(new TextDecoder().decode(new TextEncoder().encode(s)), s);
 });
 
+test('decode truncated 2-byte sequence does not read past end', () => {
+  const result = new TextDecoder().decode(new Uint8Array([0x41, 0xC3])); // 'A' + lone lead byte
+  eq(result, 'A'); // truncated sequence is dropped, no garbage appended
+});
+
+test('decode truncated 3-byte sequence does not read past end', () => {
+  const result = new TextDecoder().decode(new Uint8Array([0x41, 0xE2, 0x80])); // 'A' + 2/3 bytes
+  eq(result, 'A');
+});
+
+test('decode truncated 4-byte sequence does not read past end', () => {
+  const result = new TextDecoder().decode(new Uint8Array([0x41, 0xF0, 0x9F, 0x98])); // 'A' + 3/4 bytes
+  eq(result, 'A');
+});
+
 // ============================================================
 // globals
 // ============================================================
@@ -552,6 +688,8 @@ test('atob decodes back', () => eq(atob('SGVsbG8='), 'Hello'));
 test('btoa/atob round-trip', () => eq(atob(btoa('The quick brown fox')), 'The quick brown fox'));
 test('atob single byte (2-char group + ==)', () => eq(atob('YQ=='), 'a'));
 test('atob two bytes (3-char group + =)', () => eq(atob('YWI='), 'ab'));
+test('atob throws on invalid character', () => throws(() => atob('SGVs!G8=')));
+test('atob throws on non-base64 character in otherwise valid string', () => throws(() => atob('YQ$=')));
 
 // ============================================================
 // cleanup & report

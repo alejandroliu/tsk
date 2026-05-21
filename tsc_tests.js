@@ -20,11 +20,9 @@ function tsc(...args) {
 let _n = 0;
 function tscOutput(...args) {
   const out = TMP + '/cap' + (_n++) + '.txt';
-  const script = TMP + '/run' + (_n++) + '.sh';
-  const sq = s => "'" + s.replace(/'/g, "'\\''") + "'";
-  const parts = ['qjs', '--std', '-I', SHIM, TSC, ...args].map(sq).join(' ');
-  fs.writeFileSync(script, '#!/bin/sh\n' + parts + ' >' + sq(out) + ' 2>&1\n');
-  os.exec(['sh', script], { usePath: true });
+  const fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644);
+  os.exec(['qjs', '--std', '-I', SHIM, TSC, ...args], { usePath: true, stdout: fd, stderr: fd });
+  os.close(fd);
   return fs.readFileSync(out, 'utf8');
 }
 
@@ -481,6 +479,28 @@ test('--jsx preserve keeps JSX syntax and outputs a .jsx file', () => {
   const content = fs.readFileSync(jsx, 'utf8');
   assert(content.includes('<div>'), 'expected JSX syntax to be preserved');
   assert(!content.includes('React.createElement'), 'expected no createElement transformation');
+});
+
+// ============================================================
+// incremental build — crypto integration
+// ============================================================
+
+section('incremental build — crypto integration');
+
+test('.tsbuildinfo hashes are SHA-256 (64 hex chars) when crypto is available', () => {
+  const d = TMP + '/crypto_incremental';
+  fs.mkdirSync(d);
+  const buildInfoPath = d + '/build.tsbuildinfo';
+  fs.writeFileSync(d + '/tsconfig.json', JSON.stringify({
+    compilerOptions: { incremental: true, tsBuildInfoFile: './build.tsbuildinfo', noEmit: true },
+  }));
+  fs.writeFileSync(d + '/main.ts', 'const x: number = 42;\n');
+  eq(tsc('--project', d), 0);
+  assert(fs.existsSync(buildInfoPath), 'expected build.tsbuildinfo to exist');
+  const raw = fs.readFileSync(buildInfoPath, 'utf8');
+  // SHA-256 hashes are 64 lowercase hex chars; DJB2 fallback produces short decimal strings
+  assert(/[0-9a-f]{64}/.test(raw),
+    'expected SHA-256 hash in .tsbuildinfo; crypto not being used (DJB2 fallback detected)');
 });
 
 // ============================================================

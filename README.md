@@ -51,9 +51,9 @@ exec qjs --std -I /path/to/node_shim.js /path/to/typescript-5.4.5/tsc.js "$@"
 | `require('./rel')` / `require('pkg')` | CommonJS module loader — resolves files and `node_modules` |
 | TypeScript plugin host (`sys.require()`) | Plugin host calls `require()` with absolute paths; these resolve correctly via the module loader |
 
-`require()` supports relative paths (`./`, `../`), absolute paths, and bare package names. For bare names it walks `node_modules` directories up the filesystem tree (standard Node.js resolution). Entry points are resolved via `package.json` `"main"`, falling back to `index.js`. Modules are cached after first load; circular dependencies receive a partial `exports` object, matching Node.js behaviour.
+`require()` supports relative paths (`./`, `../`), absolute paths, and bare package names. For bare names it walks `node_modules` directories up the filesystem tree (standard Node.js resolution), then any directories listed in `NODE_PATH` (colon-separated). Entry points are resolved via `package.json` `"main"`, falling back to `index.js`. Modules are cached after first load; circular dependencies receive a partial `exports` object, matching Node.js behaviour.
 
-Because `require('crypto')` throws, TypeScript falls back to its built-in `generateDjb2Hash` for content hashing. Incremental build info (`.tsbuildinfo`) still works; it just uses a different hash algorithm than SHA-256.
+`require('crypto')` provides a pure-JS SHA-256 implementation. TypeScript uses it for content hashing in `.tsbuildinfo` incremental builds, matching the hash algorithm used by Node.js.
 
 ## Limitations
 

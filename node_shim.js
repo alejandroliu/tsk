@@ -43,41 +43,57 @@ if (typeof TextDecoder === 'undefined') {
       while (i < view.length) {
         const b = view[i];
         if (b < 0x80) { s += String.fromCharCode(b); i++; }
-        else if (b < 0xE0) { s += String.fromCharCode(((b & 0x1F) << 6) | (view[i+1] & 0x3F)); i += 2; }
-        else if (b < 0xF0) { s += String.fromCharCode(((b & 0x0F) << 12) | ((view[i+1] & 0x3F) << 6) | (view[i+2] & 0x3F)); i += 3; }
-        else { const cp = ((b & 0x07) << 18) | ((view[i+1] & 0x3F) << 12) | ((view[i+2] & 0x3F) << 6) | (view[i+3] & 0x3F); s += String.fromCodePoint(cp); i += 4; }
+        else if (b < 0xE0) { if (i + 1 >= view.length) break; s += String.fromCharCode(((b & 0x1F) << 6) | (view[i+1] & 0x3F)); i += 2; }
+        else if (b < 0xF0) { if (i + 2 >= view.length) break; s += String.fromCharCode(((b & 0x0F) << 12) | ((view[i+1] & 0x3F) << 6) | (view[i+2] & 0x3F)); i += 3; }
+        else { if (i + 3 >= view.length) break; const cp = ((b & 0x07) << 18) | ((view[i+1] & 0x3F) << 12) | ((view[i+2] & 0x3F) << 6) | (view[i+3] & 0x3F); s += String.fromCodePoint(cp); i += 4; }
       }
       return s;
     }
   };
 }
 
+// ---- Base64 helpers ----
+
+const _B64CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+
+function _b64encode(u8) {
+  let r = '', i = 0;
+  while (i < u8.length) {
+    const a = u8[i++];
+    const b = i < u8.length ? u8[i++] : -1;
+    const c = i < u8.length ? u8[i++] : -1;
+    r += _B64CHARS[a >> 2];
+    if (b === -1)      { r += _B64CHARS[(a & 3) << 4] + '=='; }
+    else if (c === -1) { r += _B64CHARS[((a & 3) << 4) | (b >> 4)] + _B64CHARS[(b & 15) << 2] + '='; }
+    else               { r += _B64CHARS[((a & 3) << 4) | (b >> 4)] + _B64CHARS[((b & 15) << 2) | (c >> 6)] + _B64CHARS[c & 63]; }
+  }
+  return r;
+}
+
+function _b64decode(str) {
+  str = str.replace(/\s/g, '');
+  const bytes = [];
+  for (let i = 0; i < str.length; i += 4) {
+    const a = _B64CHARS.indexOf(str[i]),     b = _B64CHARS.indexOf(str[i+1]);
+    const c = (str[i+2] === '=' || str[i+2] === undefined) ? -1 : _B64CHARS.indexOf(str[i+2]);
+    const d = (str[i+3] === '=' || str[i+3] === undefined) ? -1 : _B64CHARS.indexOf(str[i+3]);
+    bytes.push((a << 2) | (b >> 4));
+    if (c !== -1) bytes.push(((b & 15) << 4) | (c >> 2));
+    if (d !== -1) bytes.push(((c & 3) << 6) | d);
+  }
+  return new Uint8Array(bytes);
+}
+
 if (typeof btoa === 'undefined') {
-  const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
   globalThis.btoa = (str) => {
-    let r = '', i = 0;
-    while (i < str.length) {
-      const a = str.charCodeAt(i++);
-      const hasB = i < str.length, b = hasB ? str.charCodeAt(i++) : 0;
-      const hasC = i < str.length, c = hasC ? str.charCodeAt(i++) : 0;
-      r += B64[a >> 2] + B64[((a & 3) << 4) | (b >> 4)]
-        + (hasB ? B64[((b & 15) << 2) | (c >> 6)] : '=')
-        + (hasC ? B64[c & 63] : '=');
-    }
-    return r;
+    const u8 = new Uint8Array(str.length);
+    for (let i = 0; i < str.length; i++) u8[i] = str.charCodeAt(i);
+    return _b64encode(u8);
   };
   globalThis.atob = (str) => {
-    str = str.replace(/[^A-Za-z0-9+/]/g, '');
-    let r = '', i = 0;
-    while (i < str.length) {
-      const a = B64.indexOf(str[i++]), b = B64.indexOf(str[i++]);
-      const c = i < str.length ? B64.indexOf(str[i++]) : -1;
-      const d = i < str.length ? B64.indexOf(str[i++]) : -1;
-      r += String.fromCharCode((a << 2) | (b >> 4));
-      if (c !== -1) r += String.fromCharCode(((b & 15) << 4) | (c >> 2));
-      if (d !== -1) r += String.fromCharCode(((c & 3) << 6) | d);
-    }
-    return r;
+    if (/[^A-Za-z0-9+/=\s]/.test(str)) throw new Error('InvalidCharacterError');
+    const bytes = _b64decode(str);
+    return Array.from(bytes, b => String.fromCharCode(b)).join('');
   };
 }
 
@@ -91,19 +107,9 @@ class _Buffer extends Uint8Array {
   static from(data, encoding) {
     if (typeof data === 'string') {
       if (encoding === 'base64') {
-        const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
-        const s = data.replace(/\s/g, '');
-        const bytes = [];
-        for (let j = 0; j < s.length; j += 4) {
-          const a = B64.indexOf(s[j]), b = B64.indexOf(s[j+1]);
-          const c = s[j+2] === '=' || s[j+2] === undefined ? -1 : B64.indexOf(s[j+2]);
-          const d = s[j+3] === '=' || s[j+3] === undefined ? -1 : B64.indexOf(s[j+3]);
-          bytes.push((a << 2) | (b >> 4));
-          if (c !== -1) bytes.push(((b & 15) << 4) | (c >> 2));
-          if (d !== -1) bytes.push(((c & 3) << 6) | d);
-        }
-        const b = new _Buffer(bytes.length);
-        for (let j = 0; j < bytes.length; j++) b[j] = bytes[j];
+        const u8 = _b64decode(data);
+        const b = new _Buffer(u8.length);
+        b.set(u8);
         return b;
       }
       if (encoding === 'hex') { const b = new _Buffer(data.length >> 1); for (let i = 0; i < b.length; i++) b[i] = parseInt(data.slice(i*2, i*2+2), 16); return b; }
@@ -142,18 +148,7 @@ class _Buffer extends Uint8Array {
     if (!encoding || encoding === 'utf8' || encoding === 'utf-8') return _dec.decode(sl);
     if (encoding === 'utf16le' || encoding === 'utf-16le') return _dec16.decode(sl);
     if (encoding === 'hex') return Array.from(sl).map(b => b.toString(16).padStart(2, '0')).join('');
-    if (encoding === 'base64') {
-      const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
-      let r = '', i = 0;
-      while (i < sl.length) {
-        const a = sl[i++], b = i < sl.length ? sl[i++] : -1, c = i < sl.length ? sl[i++] : -1;
-        r += B64[a >> 2];
-        if (b === -1) { r += B64[(a & 3) << 4] + '=='; }
-        else if (c === -1) { r += B64[((a & 3) << 4) | (b >> 4)] + B64[(b & 15) << 2] + '='; }
-        else { r += B64[((a & 3) << 4) | (b >> 4)] + B64[((b & 15) << 2) | (c >> 6)] + B64[c & 63]; }
-      }
-      return r;
-    }
+    if (encoding === 'base64') return _b64encode(sl);
     if (encoding === 'ascii') return Array.from(sl).map(b => String.fromCharCode(b & 0x7F)).join('');
     if (encoding === 'latin1' || encoding === 'binary') return Array.from(sl).map(b => String.fromCharCode(b)).join('');
     return _dec.decode(sl);
@@ -162,7 +157,20 @@ class _Buffer extends Uint8Array {
     if (typeof offset === 'string') { encoding = offset; offset = 0; length = this.length; }
     if (typeof length === 'string') { encoding = length; length = this.length - (offset || 0); }
     offset = offset || 0;
-    const bytes = _enc.encode(string);
+    const enc = encoding || 'utf8';
+    let bytes;
+    if (enc === 'utf8' || enc === 'utf-8') {
+      bytes = _enc.encode(string);
+    } else if (enc === 'ascii' || enc === 'latin1' || enc === 'binary') {
+      bytes = new Uint8Array(string.length);
+      for (let i = 0; i < string.length; i++) bytes[i] = string.charCodeAt(i) & 0xFF;
+    } else if (enc === 'hex') {
+      bytes = _Buffer.from(string, 'hex');
+    } else if (enc === 'base64') {
+      bytes = _b64decode(string);
+    } else {
+      bytes = _enc.encode(string);
+    }
     const count = Math.min(bytes.length, length !== undefined ? length : bytes.length, this.length - offset);
     for (let i = 0; i < count; i++) this[offset + i] = bytes[i];
     return count;
@@ -198,11 +206,27 @@ function _flagsToOs(flags) {
   return O_RDONLY;
 }
 
+const _errMsgs = {
+  ENOENT: 'no such file or directory', EEXIST: 'file already exists',
+  EACCES: 'permission denied',         EISDIR: 'illegal operation on a directory',
+  ENOTDIR: 'not a directory',          ENOSPC: 'no space left on device',
+  EPERM: 'operation not permitted',
+};
 function _makeErr(code, path) {
-  const msg = code === 'ENOENT' ? `ENOENT: no such file or directory, '${path}'`
-            : code === 'EEXIST' ? `EEXIST: file already exists, '${path}'`
-            : `${code}: operation failed, '${path}'`;
+  const msg = `${code}: ${_errMsgs[code] || 'operation failed'}, '${path}'`;
   return Object.assign(new Error(msg), { code, path });
+}
+function _errnoToCode(err) {
+  switch (err) {
+    case -1:  return 'EPERM';
+    case -2:  return 'ENOENT';
+    case -13: return 'EACCES';
+    case -17: return 'EEXIST';
+    case -20: return 'ENOTDIR';
+    case -21: return 'EISDIR';
+    case -28: return 'ENOSPC';
+    default:  return 'EIO';
+  }
 }
 
 // ---- fs module ----
@@ -247,28 +271,40 @@ const _fsModule = {
   },
 
   writeFileSync(filePath, data, options) {
-    const f = std.open(filePath, 'w');
-    if (!f) throw _makeErr('ENOENT', filePath);
-    f.puts(typeof data === 'string' ? data : (data.toString ? data.toString('utf8') : String(data)));
-    f.flush(); f.close();
+    const fd = os.open(filePath, O_WRONLY | O_CREAT | O_TRUNC, 0o666);
+    if (fd < 0) throw _makeErr(_errnoToCode(fd), filePath);
+    const bytes = typeof data === 'string' ? _enc.encode(data) : new Uint8Array(data.buffer || data, data.byteOffset || 0, data.byteLength || data.length);
+    let off = 0;
+    while (off < bytes.length) { const n = os.write(fd, bytes.buffer, bytes.byteOffset + off, bytes.length - off); if (n <= 0) break; off += n; }
+    os.close(fd);
   },
 
   appendFileSync(filePath, data) {
-    const f = std.open(filePath, 'a');
-    if (!f) throw _makeErr('ENOENT', filePath);
-    f.puts(typeof data === 'string' ? data : String(data));
-    f.flush(); f.close();
+    const fd = os.open(filePath, O_WRONLY | O_CREAT | O_APPEND, 0o666);
+    if (fd < 0) throw _makeErr(_errnoToCode(fd), filePath);
+    const bytes = typeof data === 'string' ? _enc.encode(data) : new Uint8Array(data.buffer || data, data.byteOffset || 0, data.byteLength || data.length);
+    let off = 0;
+    while (off < bytes.length) { const n = os.write(fd, bytes.buffer, bytes.byteOffset + off, bytes.length - off); if (n <= 0) break; off += n; }
+    os.close(fd);
   },
 
   openSync(filePath, flags, mode) {
     const fd = os.open(filePath, _flagsToOs(flags), mode || 0o666);
-    if (fd < 0) throw _makeErr('ENOENT', filePath);
+    if (fd < 0) throw _makeErr(_errnoToCode(fd), filePath);
     return fd;
   },
 
-  writeSync(fd, data, position, encoding) {
-    const bytes = typeof data === 'string' ? _enc.encode(data) : data;
-    os.write(fd, bytes.buffer || bytes, bytes.byteOffset || 0, bytes.byteLength || bytes.length);
+  writeSync(fd, data, offsetOrPosition, length, position) {
+    if (typeof data === 'string') {
+      if (typeof offsetOrPosition === 'number') os.seek(fd, offsetOrPosition, 0);
+      const bytes = _enc.encode(data);
+      os.write(fd, bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    } else {
+      if (typeof position === 'number') os.seek(fd, position, 0);
+      const off = offsetOrPosition || 0;
+      const len = length !== undefined ? length : (data.byteLength || data.length) - off;
+      os.write(fd, data.buffer || data, (data.byteOffset || 0) + off, len);
+    }
   },
 
   closeSync(fd) {
@@ -307,7 +343,7 @@ const _fsModule = {
     // Return dirent objects
     return names.map(name => {
       const full = dirPath.replace(/\/$/, '') + '/' + name;
-      const [st, sterr] = os.stat(full);
+      const [st, sterr] = (os.lstat || os.stat)(full);
       const S_IFMT = 0o170000, S_IFDIR = 0o040000, S_IFREG = 0o100000, S_IFLNK = 0o120000;
       const mode = sterr === 0 ? st.mode : 0;
       return {
@@ -335,7 +371,7 @@ const _fsModule = {
       }
     } else {
       const err = os.mkdir(dirPath, 0o755);
-      if (err !== 0) throw _makeErr('EEXIST', dirPath);
+      if (err !== 0) throw _makeErr(_errnoToCode(err), dirPath);
     }
   },
 
@@ -441,6 +477,103 @@ const _osModule = {
   userInfo() { return { username: std.getenv('USER') || 'user', uid: 1000, gid: 1000, shell: '/bin/sh', homedir: std.getenv('HOME') || '/root' }; },
 };
 
+// ---- crypto module ----
+
+const _cryptoModule = (() => {
+  const _K = [
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+  ];
+
+  function rotr32(x, n) { return (x >>> n) | (x << (32 - n)); }
+
+  function sha256(data) {
+    if (typeof data === 'string') data = _enc.encode(data);
+    else if (!(data instanceof Uint8Array)) data = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+
+    const len = data.length;
+    const blocks = Math.ceil((len + 9) / 64);
+    const msg = new Uint8Array(blocks * 64);
+    msg.set(data);
+    msg[len] = 0x80;
+    const dv = new DataView(msg.buffer);
+    const bitLen = len * 8;
+    dv.setUint32(blocks * 64 - 8, Math.floor(bitLen / 0x100000000), false);
+    dv.setUint32(blocks * 64 - 4, bitLen >>> 0, false);
+
+    let h0 = 0x6a09e667, h1 = 0xbb67ae85, h2 = 0x3c6ef372, h3 = 0xa54ff53a;
+    let h4 = 0x510e527f, h5 = 0x9b05688c, h6 = 0x1f83d9ab, h7 = 0x5be0cd19;
+    const w = new Array(64);
+
+    for (let i = 0; i < blocks * 64; i += 64) {
+      for (let j = 0; j < 16; j++) w[j] = dv.getInt32(i + j * 4, false);
+      for (let j = 16; j < 64; j++) {
+        const s0 = rotr32(w[j-15], 7) ^ rotr32(w[j-15], 18) ^ (w[j-15] >>> 3);
+        const s1 = rotr32(w[j-2], 17) ^ rotr32(w[j-2], 19) ^ (w[j-2] >>> 10);
+        w[j] = (w[j-16] + s0 + w[j-7] + s1) | 0;
+      }
+      let a = h0, b = h1, c = h2, d = h3, e = h4, f = h5, g = h6, h = h7;
+      for (let j = 0; j < 64; j++) {
+        const S1 = rotr32(e, 6) ^ rotr32(e, 11) ^ rotr32(e, 25);
+        const ch = (e & f) ^ (~e & g);
+        const temp1 = (h + S1 + ch + _K[j] + w[j]) | 0;
+        const S0 = rotr32(a, 2) ^ rotr32(a, 13) ^ rotr32(a, 22);
+        const maj = (a & b) ^ (a & c) ^ (b & c);
+        const temp2 = (S0 + maj) | 0;
+        h = g; g = f; f = e; e = (d + temp1) | 0;
+        d = c; c = b; b = a; a = (temp1 + temp2) | 0;
+      }
+      h0 = (h0 + a) | 0; h1 = (h1 + b) | 0; h2 = (h2 + c) | 0; h3 = (h3 + d) | 0;
+      h4 = (h4 + e) | 0; h5 = (h5 + f) | 0; h6 = (h6 + g) | 0; h7 = (h7 + h) | 0;
+    }
+
+    const result = new Uint8Array(32);
+    const rv = new DataView(result.buffer);
+    rv.setUint32(0,  h0 >>> 0, false); rv.setUint32(4,  h1 >>> 0, false);
+    rv.setUint32(8,  h2 >>> 0, false); rv.setUint32(12, h3 >>> 0, false);
+    rv.setUint32(16, h4 >>> 0, false); rv.setUint32(20, h5 >>> 0, false);
+    rv.setUint32(24, h6 >>> 0, false); rv.setUint32(28, h7 >>> 0, false);
+    return result;
+  }
+
+  return {
+    createHash(algorithm) {
+      if (algorithm.toLowerCase().replace(/-/g, '') !== 'sha256')
+        throw new Error('crypto: unsupported hash algorithm: ' + algorithm);
+      const parts = [];
+      return {
+        update(data) {
+          if (typeof data === 'string') parts.push(_enc.encode(data));
+          else parts.push(data instanceof Uint8Array ? data : new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
+          return this;
+        },
+        digest(encoding) {
+          const total = parts.reduce((s, c) => s + c.length, 0);
+          const buf = new Uint8Array(total);
+          let off = 0;
+          for (const p of parts) { buf.set(p, off); off += p.length; }
+          const hash = sha256(buf);
+          if (!encoding || encoding === 'buffer') return _Buffer.from(hash);
+          if (encoding === 'hex') return Array.from(hash).map(b => b.toString(16).padStart(2, '0')).join('');
+          if (encoding === 'base64') return _Buffer.from(hash).toString('base64');
+          return _Buffer.from(hash);
+        },
+      };
+    },
+    randomBytes(size) {
+      const b = new _Buffer(size);
+      for (let i = 0; i < size; i++) b[i] = (Math.random() * 256) | 0;
+      return b;
+    },
+  };
+})();
+
 // ---- require ----
 
 const _moduleCache = {};
@@ -479,9 +612,20 @@ function _makeRequire(fromDir) {
       case 'path':   return _pathModule;
       case 'os':     return _osModule;
       case 'buffer': return { Buffer: _Buffer };
-      case 'crypto': throw new Error('crypto not available'); // triggers fallback to generateDjb2Hash
+      case 'crypto': return _cryptoModule;
       case 'util':   return {
-        format(fmt, ...a) { return a.reduce((s, v) => s.replace(/%[sdoj]/, String(v)), fmt); },
+        format(fmt, ...a) {
+          let i = 0;
+          return String(fmt).replace(/%[sdoj%]/g, m => {
+            if (m === '%%') return '%';
+            if (i >= a.length) return m;
+            const v = a[i++];
+            if (m === '%s') return String(v);
+            if (m === '%d') return String(Number(v));
+            if (m === '%j') { try { return JSON.stringify(v); } catch { return '[Circular]'; } }
+            if (m === '%o') { try { return JSON.stringify(v, null, 2); } catch { return String(v); } }
+          });
+        },
         inspect(v) { try { return JSON.stringify(v); } catch { return String(v); } },
         promisify(fn) { return (...a) => new Promise((res, rej) => fn(...a, (e, v) => e ? rej(e) : res(v))); },
         inherits(C, P) { C.prototype = Object.create(P.prototype, { constructor: { value: C } }); },
@@ -501,7 +645,12 @@ function _makeRequire(fromDir) {
     if (name.startsWith('./') || name.startsWith('../') || name.startsWith('/')) {
       filePath = _resolveFile(_pathModule.resolve(fromDir, name));
     } else {
-      for (const dir of _nodeModulesPaths(fromDir)) {
+      const nodePath = (process.env.NODE_PATH || '').split(':').filter(Boolean);
+      const searchDirs = [
+        ..._nodeModulesPaths(fromDir),
+        ...nodePath.map(d => _pathModule.resolve(d)),
+      ];
+      for (const dir of searchDirs) {
         filePath = _resolveFile(_pathModule.join(dir, name));
         if (filePath) break;
       }
